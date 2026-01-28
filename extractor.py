@@ -1,48 +1,44 @@
 import os
 import json
-from pathlib import Path
-import random
 import shutil
 from pathlib import Path
-
+from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 from datasets import load_dataset
 
-# ---- CONFIG ----
-PARQUET_DIR = Path("/Users/reyraa/Projects/natix/hydra/roadwork-dataset/data")
-OUTPUT_DIR = Path("./clean_dataset")
-MAX_TOTAL = None  # Set to an integer for quick tests (e.g., 1000)
+HF_DATASET_REPO = "natix-network-org/roadwork" 
+
+OUTPUT_DIR = Path("./clean_dataset2")
+MAX_SAMPLES = None  # Set to e.g., 1000 for testing, None for full run
+NUM_THREADS = 8     # Adjust based on your CPU cores
 
 # ---- OUTPUT STRUCTURE ----
 POS_DIR = OUTPUT_DIR / "positive_cases"
 NEG_DIR = OUTPUT_DIR / "negative_cases"
 UNSURE_DIR = OUTPUT_DIR / "unsure_cases"
-CLASSES = ["positive_cases", "negative_cases"]
-TRAIN_RATIO = 0.8
-SEED = 42
 
-random.seed(SEED)
-
+# Ensure clean directories
 for d in [POS_DIR, NEG_DIR, UNSURE_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
-# ---- FUNCTION: Process with Hugging Face dataset loader ----
-def extract_and_sort(dataset_path: str):
-    ds = load_dataset("parquet", data_files=dataset_path, split="train")
-    print(f"Loaded {len(ds)} rows from {dataset_path}")
+def process_single_row(args):
+    """
+    Helper function to process and save a single row.
+    Designed to be run in parallel.
+    """
+    idx, row = args
+    
+    try:
+        image = row["image"] # PIL Image
+        # Extract metadata (everything except the image binary)
+        metadata = {k: v for k, v in row.items() if k != "image"}
+        
+        label = metadata.get("label")
+        # Handle cases where scene_description might be None or empty string
+        scene_desc = metadata.get("scene_description")
+        has_description = bool(scene_desc and str(scene_desc).strip())
 
-    for idx, row in tqdm(enumerate(ds), total=len(ds), desc=f"Processing {Path(dataset_path).name}"):
-        try:
-            image = row["image"]  # This is a PIL.Image
-            metadata = {k: v for k, v in row.items() if k != "image"}
-            label = metadata.get("label")
-            has_description = bool(metadata.get("scene_description"))
-        except Exception as e:
-            print(f"Skipping row {idx}: {e}")
-            continue
-
-        out_name = f"{Path(dataset_path).stem}__image_{idx}"
-
+        # Logic Mapping
         if label == 1 and has_description:
             target_dir = POS_DIR
         elif label == 0 and not has_description:
@@ -50,58 +46,55 @@ def extract_and_sort(dataset_path: str):
         else:
             target_dir = UNSURE_DIR
 
-        try:
-            image.convert("RGB").save(target_dir / f"{out_name}.jpeg")
-            with open(target_dir / f"{out_name}.json", "w") as f:
-                json.dump(metadata, f, indent=2)
-        except Exception as e:
-            print(f"Failed to save {out_name}: {e}")
+        # Create filename
+        out_name = f"image_{idx}"
+        image_path = target_dir / f"{out_name}.jpeg"
+        json_path = target_dir / f"{out_name}.json"
 
-        if MAX_TOTAL and idx >= MAX_TOTAL:
-            break
+        # Save Image (Convert to RGB to handle PNG/RGBA issues)
+        image.convert("RGB").save(image_path, "JPEG", quality=90)
+        
+        # Save Metadata
+        with open(json_path, "w") as f:
+            json.dump(metadata, f, indent=2)
+            
+        return True
 
-def prepare_dirs():
-    for split in ["train", "test"]:
-        for cls in CLASSES:
-            (OUTPUT_DIR / split / cls).mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"Error processing row {idx}: {e}")
+        return False
 
+def main():
+    print(f"⬇️  Downloading/Loading dataset from '{HF_DATASET_REPO}'...")
+    
+    # Load dataset from Hub (Streaming mode is faster if you don't need the whole thing in RAM)
+    # If the dataset is huge, use streaming=True. If it fits in RAM, remove streaming=True.
+    ds = load_dataset(HF_DATASET_REPO, split="train", streaming=False)
+    
+    if MAX_SAMPLES:
+        print(f"⚠️  Limiting to first {MAX_SAMPLES} samples for testing.")
+        ds = ds.select(range(MAX_SAMPLES))
 
+    total_rows = len(ds)
+    print(f"✅ Loaded {total_rows} rows. Starting processing with {NUM_THREADS} threads...")
 
-def split_class(cls: str):
-    src_dir = OUTPUT_DIR / cls
+    # Prepare arguments for parallel processing
+    # We convert dataset to a list of (index, row) tuples for the executor
+    # Note: If dataset is massive, iterate directly instead of list comprehension to save RAM
+    work_items = ((i, row) for i, row in enumerate(ds))
 
-    # collect samples by stem (jpeg + json)
-    samples = {}
-    for jpeg in src_dir.glob("*.jpeg"):
-        stem = jpeg.stem
-        json_file = jpeg.with_suffix(".json")
-        if json_file.exists():
-            samples[stem] = (jpeg, json_file)
+    # Use ThreadPoolExecutor for parallel IO operations
+    with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
+        results = list(tqdm(
+            executor.map(process_single_row, work_items),
+            total=total_rows,
+            unit="img"
+        ))
 
-    items = list(samples.values())
-    random.shuffle(items)
+    print("\n✅ Done! Dataset stored in:", OUTPUT_DIR.resolve())
+    print(f" - {len(list(POS_DIR.glob('*.jpeg')))} positive cases")
+    print(f" - {len(list(NEG_DIR.glob('*.jpeg')))} negative cases")
+    print(f" - {len(list(UNSURE_DIR.glob('*.jpeg')))} unsure cases")
 
-    split_idx = int(len(items) * TRAIN_RATIO)
-    train_items = items[:split_idx]
-    test_items = items[split_idx:]
-
-    for split_name, split_items in [("train", train_items), ("test", test_items)]:
-        dest_dir = OUTPUT_DIR / split_name / cls
-        for jpeg, json_file in split_items:
-            shutil.move(jpeg, dest_dir / jpeg.name)
-            shutil.move(json_file, dest_dir / json_file.name)
-
-
-# ---- MAIN ----
-all_parquets = sorted(PARQUET_DIR.glob("*.parquet"))
-
-for parquet_file in all_parquets:
-    extract_and_sort(str(parquet_file))
-    prepare_dirs()
-    for cls in CLASSES:
-        split_class(cls)
-
-print("\n✅ Done: Clean dataset written to:", OUTPUT_DIR.resolve())
-print(f" - {len(list(POS_DIR.glob('*.jpeg')))} positive cases")
-print(f" - {len(list(NEG_DIR.glob('*.jpeg')))} negative cases")
-print(f" - {len(list(UNSURE_DIR.glob('*.jpeg')))} unsure cases")
+if __name__ == "__main__":
+    main()
