@@ -1,4 +1,5 @@
 import sys
+import torch # Needed to check compilation support
 from datasets import load_dataset
 from transformers import (
     ViTImageProcessor,
@@ -6,6 +7,11 @@ from transformers import (
     TrainingArguments,
     Trainer
 )
+
+# 1. Optimizing for Data Loading Speed
+# Use standard library multiprocessing to detect core count for workers
+import multiprocessing
+num_workers = min(4, multiprocessing.cpu_count()) # Cap at 4 to prevent RAM OOM on 8GB machine
 
 dataset = load_dataset(
     "imagefolder",
@@ -38,7 +44,28 @@ model = ViTForImageClassification.from_pretrained(
 
 training_args = TrainingArguments(
     output_dir="./vit-roadwork-output",
-    per_device_train_batch_size=16,
+    
+    # --- HARDWARE OPTIMIZATIONS ---
+    # 1. FP16 (Mixed Precision): Critical for GTX 1660 Super
+    # Reduces VRAM usage by ~50%, allowing larger batches and faster memory access.
+    fp16=True, 
+
+    # 2. Batch Size & Accumulation
+    # 32 might fit in 6GB VRAM with FP16. If OOM, revert to 16.
+    per_device_train_batch_size=16, 
+    # Simulate a larger batch (e.g., 64) without extra VRAM
+    gradient_accumulation_steps=2, 
+    
+    # 3. Data Loading Workers
+    # Default is 0 (main process), which kills speed. Set to 4 to pre-load data.
+    dataloader_num_workers=num_workers,
+    dataloader_pin_memory=True, # Faster CPU->GPU transfer
+
+    # 4. PyTorch 2.0 Compilation
+    # Free speedup for ViT models (graph optimization)
+    torch_compile=True, 
+    
+    # --- STANDARD ARGS ---
     eval_strategy="epoch",
     save_strategy="epoch",
     logging_steps=100,
