@@ -108,6 +108,6 @@ trainer = Trainer(
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "train":
-        trainer.train()
+        trainer.train(resume_from_checkpoint=True)
     else:
         trainer.evaluate()

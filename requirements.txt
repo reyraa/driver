@@ -6,6 +6,6 @@ datasets
 transformers
 torch
 torchvision
-tqdmaccelerate
+tqdm
 tensorboardX
 scikit-learn
