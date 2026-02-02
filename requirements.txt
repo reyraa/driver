@@ -6,6 +6,6 @@ datasets
 transformers
 torch
 torchvision
-tqdmaccelerate==1.12.0
-tensorboardX==2.6.4
-scikit-learn==1.8.0
+tqdmaccelerate
+tensorboardX
+scikit-learn
