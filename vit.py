@@ -7,6 +7,8 @@ from transformers import (
     TrainingArguments,
     Trainer
 )
+import numpy as np
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
 # 1. Optimizing for Data Loading Speed
 # Use standard library multiprocessing to detect core count for workers
@@ -21,6 +23,23 @@ dataset = load_dataset(
 processor = ViTImageProcessor.from_pretrained(
     "google/vit-base-patch16-224"
 )
+
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    preds = np.argmax(logits, axis=1)
+
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        labels, preds, average="binary"
+    )
+
+    acc = accuracy_score(labels, preds)
+
+    return {
+        "accuracy": acc,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+    }
 
 def transform(batch):
     pixel_values = processor(
@@ -63,7 +82,7 @@ training_args = TrainingArguments(
 
     # 4. PyTorch 2.0 Compilation
     # Free speedup for ViT models (graph optimization)
-    torch_compile=True, 
+    torch_compile=False, 
     
     # --- STANDARD ARGS ---
     eval_strategy="epoch",
@@ -83,6 +102,8 @@ trainer = Trainer(
     args=training_args,
     train_dataset=dataset["train"],
     eval_dataset=dataset["test"],
+    # tokenizer=image_processor,   # or feature_extractor
+    compute_metrics=compute_metrics,
 )
 
 if __name__ == "__main__":

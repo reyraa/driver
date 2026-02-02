@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 from datasets import load_dataset
 
-HF_DATASET_REPO = "natix-network-org/roadwork" 
+HF_DATASET_REPO = "natix-network-org/roadwork"
 
 OUTPUT_DIR = Path("./clean_dataset2")
 MAX_SAMPLES = None  # Set to e.g., 1000 for testing, None for full run
@@ -27,12 +27,12 @@ def process_single_row(args):
     Designed to be run in parallel.
     """
     idx, row = args
-    
+
     try:
         image = row["image"] # PIL Image
         # Extract metadata (everything except the image binary)
         metadata = {k: v for k, v in row.items() if k != "image"}
-        
+
         label = metadata.get("label")
         # Handle cases where scene_description might be None or empty string
         scene_desc = metadata.get("scene_description")
@@ -53,24 +53,25 @@ def process_single_row(args):
 
         # Save Image (Convert to RGB to handle PNG/RGBA issues)
         image.convert("RGB").save(image_path, "JPEG", quality=90)
-        
+
         # Save Metadata
         with open(json_path, "w") as f:
             json.dump(metadata, f, indent=2)
-            
+
         return True
 
     except Exception as e:
         print(f"Error processing row {idx}: {e}")
         return False
 
+
 def main():
     print(f"⬇️  Downloading/Loading dataset from '{HF_DATASET_REPO}'...")
-    
+
     # Load dataset from Hub (Streaming mode is faster if you don't need the whole thing in RAM)
     # If the dataset is huge, use streaming=True. If it fits in RAM, remove streaming=True.
     ds = load_dataset(HF_DATASET_REPO, split="train", streaming=False)
-    
+
     if MAX_SAMPLES:
         print(f"⚠️  Limiting to first {MAX_SAMPLES} samples for testing.")
         ds = ds.select(range(MAX_SAMPLES))
